@@ -1109,7 +1109,7 @@ cmld_init(const char *path)
 		INFO("ksm initialized.");
 
 	if (device_config_get_tpm_enabled(device_config)) {
-		if (tss_init() < 0) {
+		if (tss_init(!cmld_is_hostedmode_active()) < 0) {
 			FATAL("Failed to initialize TSS / TPM 2.0 and tpm2d");
 		} else {
 			INFO("tss initialized.");

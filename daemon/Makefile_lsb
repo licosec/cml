@@ -37,4 +37,6 @@ install:
 	mkdir -p ${DESTDIR}/var/lib/cml
 	mkdir -p ${DESTDIR}/etc/cml
 	echo "uuid: \"$(shell cat /proc/sys/kernel/random/uuid)\"" > ${DESTDIR}/etc/cml/device.conf
-	echo "hostedmode: true" >> ${DESTDIR}/etc/cml/device.conf
+	echo "hostedmode: true\ntpm_enabled: false" >> ${DESTDIR}/etc/cml/device.conf
+	install -d ${DESTDIR}/usr/share/doc/cml
+	install guestos.proto ${DESTDIR}/usr/share/doc/cml/

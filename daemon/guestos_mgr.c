@@ -102,17 +102,21 @@ guestos_mgr_load_operatingsystems_cb(const char *path, const char *name, UNUSED 
 	char *cfg_file = guestos_get_cfg_file_new(dir);
 	char *sig_file = guestos_get_sig_file_new(dir);
 	char *cert_file = guestos_get_cert_file_new(dir);
+	//Still needed?
+	char *ca_file = guestos_get_ca_file_new(dir);
 
 	crypto_verify_result_t verify_result = crypto_verify_file_block(
 		cfg_file, sig_file, cert_file, GUESTOS_MGR_VERIFY_HASH_ALGO);
 
-	switch (verify_result) {
+	switch (verify_result.code) {
 	case VERIFY_GOOD:
+		//TODO check if CA Matches
 		guestos_verified = GUESTOS_SIGNED;
 		audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-good", name, 0);
 		INFO("Signature of GuestOS OK (GOOD)");
 		break;
 	case VERIFY_LOCALLY_SIGNED:
+		//TODO check if CA Matches
 		guestos_verified = GUESTOS_LOCALLY_SIGNED;
 		if (guestos_mgr_allow_locally_signed) {
 			audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-locally-signed",
@@ -128,7 +132,7 @@ guestos_mgr_load_operatingsystems_cb(const char *path, const char *name, UNUSED 
 		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-failed", name, 0);
 
 		ERROR("Signature verification failed (%d) while loading GuestOS config %s, skipping.",
-		      verify_result, cfg_file);
+		      verify_result.code, cfg_file);
 		res = 1;
 		goto cleanup_files;
 	}
@@ -146,6 +150,7 @@ cleanup_files:
 	mem_free0(cfg_file);
 	mem_free0(sig_file);
 	mem_free0(cert_file);
+	mem_free0(ca_file);
 cleanup:
 	mem_free0(dir);
 	return res;
@@ -375,38 +380,88 @@ push_config_verify_buf_cb(crypto_verify_result_t verify_result, unsigned char *c
 	INFO("Push GuestOS config (Phase 2)");
 	int *resp_fd = data;
 	ASSERT(resp_fd);
+	
+	guestos_t *os;
 
-	guestos_t *os = guestos_new_from_buffer(cfg_buf, cfg_buf_len, guestos_basepath);
-	const char *os_name = NULL;
-	if (!os) {
-		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "push-os-invalid", guestos_basepath,
-				0);
-		ERROR("Could not instantiate GuestOS from buffer");
-		goto err;
-	}
-	os_name = guestos_get_name(os);
-
-	switch (verify_result) {
+	switch (verify_result.code) {
 	case VERIFY_GOOD:
-		audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-good", os_name, 0);
-		INFO("Signature of GuestOS %s OK (GOOD)", os_name);
-		break;
 	case VERIFY_LOCALLY_SIGNED:
-		if (guestos_mgr_allow_locally_signed) {
-			audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-locally-signed",
-					os_name, 0);
-			INFO("Signature of GuestOS %s OK (locally signed)", os_name);
+		//TODO CHeck if ca matches
+		
+		os = guestos_new_from_buffer(cfg_buf, cfg_buf_len, guestos_basepath);
+		if (!os) {
+			audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "push-os-invalid", guestos_basepath,
+					0);
+			ERROR("Could not instantiate GuestOS from buffer");
+			goto err;
+		}
+		
+
+		guestos_t *old_os = guestos_mgr_get_latest_by_name(guestos_get_name(os), false);
+		char *ca_file;
+		//TODO do we need to free ca_file later on?
+		if (old_os == NULL) {
+			//not an update --> ca filepath with current os version number
+			ca_file = guestos_get_ca_file_new(guestos_get_dir(os));
+		} else {
+			//update --> ca filepath with old os version number
+			ca_file = guestos_get_ca_file_new(guestos_get_dir(old_os));
+		}
+		
+		if(file_exists(ca_file)){
+			char symlink_target[PATH_MAX] = {0}; 
+			int bytes_read = readlink(ca_file, symlink_target, PATH_MAX);
+			if (bytes_read == -1) {
+				ERROR("Target of symlink %s could not be read", ca_file);
+				goto err;
+			}
+			if(strncmp(str_buffer(verify_result.matched_ca), symlink_target, bytes_read)){
+				ERROR("Verification successful but CA %s did not match.", str_buffer(verify_result.matched_ca));
+				audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-failed", guestos_get_name(os), 0);
+				goto err;
+			}			
+		}else{
+			if (symlink(str_buffer(verify_result.matched_ca), ca_file)) {
+				ERROR("FAILED to create symlink %s -> %s", ca_file,
+				      str_buffer(verify_result.matched_ca));
+				audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-failed", guestos_get_name(os), 0);
+				goto err;
+			} else {
+				DEBUG("Created Symlink %s -> %s", ca_file, str_buffer(verify_result.matched_ca));
+			}
+			
+		}
+		
+		if(verify_result.code==VERIFY_GOOD){
+			audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-good", guestos_get_name(os), 0);
+			INFO("Signature of GuestOS %s OK (GOOD)", guestos_get_name(os));
 			break;
 		}
-		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-locally-signed", os_name, 0);
-		// fallthrough
+
+		if(verify_result.code==VERIFY_LOCALLY_SIGNED){
+			if (guestos_mgr_allow_locally_signed) {
+				audit_log_event(NULL, SSA, CMLD, GUESTOS_MGMT, "verify-locally-signed",
+						guestos_get_name(os), 0);
+				INFO("Signature of GuestOS %s OK (locally signed)", guestos_get_name(os));
+				break;
+			}
+			audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-locally-signed", guestos_get_name(os), 0);
+		}
+		__attribute__ ((fallthrough));
+		
 	default:
-		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-failed", os_name, 0);
+		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "verify-failed", NULL, 0);
 		ERROR("Signature verification failed (%d) for pushed GuestOS config buffer, skipping.",
-		      verify_result);
+		      verify_result.code);
 		goto err;
 	}
 
+
+	if(!os){
+		ERROR("OS not parsed after successful verification");
+		goto err;
+	}
+	const char *os_name = guestos_get_name(os);
 	uint64_t os_ver = guestos_get_version(os);
 	const guestos_t *old_os = guestos_mgr_get_latest_by_name(os_name, false);
 	if (old_os) {
@@ -434,6 +489,34 @@ push_config_verify_buf_cb(crypto_verify_result_t verify_result, unsigned char *c
 		}
 		DEBUG("Updating GuestOS config for %s from v%" PRIu64 " to v%" PRIu64 ".", os_name,
 		      old_ver, os_ver);
+
+		char old_os_ca_path[PATH_MAX] = { 0 };
+		char *old_os_ca_symlink = guestos_get_ca_file_new(guestos_get_dir(old_os));
+		char *new_os_ca_symlink = guestos_get_ca_file_new(guestos_get_dir(os));
+
+		//read Path to CA from old_os_ca_symlink
+		if (readlink(old_os_ca_symlink, old_os_ca_path, sizeof(old_os_ca_path)) < 0) {
+			ERROR("Symlink destination of %s could not been read. Creating new symlink not possible.",
+			      old_os_ca_symlink);
+			mem_free0(old_os_ca_symlink);
+			mem_free0(new_os_ca_symlink);
+			goto err;
+		} else {
+			//update ca symlink name
+			if (symlink(old_os_ca_path, new_os_ca_symlink)) {
+				ERROR("FAILED to create symlink %s -> %s.", new_os_ca_symlink,
+				      old_os_ca_path);
+					mem_free0(old_os_ca_symlink);
+					mem_free0(new_os_ca_symlink);
+					goto err;
+			} else {
+				DEBUG("Created Symlink %s -> %s", new_os_ca_symlink,
+				      old_os_ca_path);
+			}
+		}
+		mem_free0(old_os_ca_symlink);
+		mem_free0(new_os_ca_symlink);
+
 	} else {
 		// Fresh install
 		DEBUG("Installing GuestOS config for %s v%" PRIu64 ".", os_name, os_ver);
@@ -491,7 +574,7 @@ cleanup_purge:
 cleanup_os:
 	guestos_free(os);
 err:
-	audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "update-start", os_name, 0);
+	audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "update-start", NULL, 0);
 
 	if (control_send_message(CONTROL_RESPONSE_GUESTOS_MGR_INSTALL_FAILED, *resp_fd) < 0)
 		WARN("Could not send response to fd=%d", *resp_fd);
@@ -518,9 +601,25 @@ guestos_mgr_push_config(unsigned char *cfg, size_t cfglen, unsigned char *sig, s
 		audit_log_event(NULL, FSA, CMLD, GUESTOS_MGMT, "push-os-missing-certificate",
 				guestos_basepath, 0);
 	} else {
+		//TODO braucht man eigentlich nicht mehr?
+
+		//Construct os to get CA filepath
+		guestos_t *os = guestos_new_from_buffer(cfg, cfglen, guestos_basepath);
+		//Check if it is an update --> ca filepath ends with version of old os
+		guestos_t *old_os = guestos_mgr_get_latest_by_name(guestos_get_name(os), false);
+		char *ca_file;
+		if (old_os == NULL) {
+			//not an update --> ca filepath with current os version number
+			ca_file = guestos_get_ca_file_new(guestos_get_dir(os));
+		} else {
+			//update --> ca filepath with old os version number
+			ca_file = guestos_get_ca_file_new(guestos_get_dir(old_os));
+		}
+
 		res = crypto_verify_buf(cfg, cfglen, sig, siglen, cert, certlen,
 					GUESTOS_MGR_VERIFY_HASH_ALGO, push_config_verify_buf_cb,
 					cb_resp_fd);
+		mem_free0(ca_file);
 	}
 	if (res < 0) {
 		if (control_send_message(CONTROL_RESPONSE_GUESTOS_MGR_INSTALL_FAILED, resp_fd) < 0)

@@ -32,6 +32,7 @@
 #include "common/file.h"
 #include "common/list.h"
 #include "common/protobuf.h"
+#include "common/str.h"
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -122,6 +123,8 @@ container_config_verify(const char *prefix, uint8_t *conf_buf, size_t conf_len, 
 	off_t sig_size = sig_len;
 	off_t cert_size = cert_len;
 
+	
+
 	if (!cmld_uses_signed_configs()) {
 		TRACE("Signed configuration is disabled, skipping!");
 		return true;
@@ -162,15 +165,50 @@ container_config_verify(const char *prefix, uint8_t *conf_buf, size_t conf_len, 
 	// check cert and signature buffers
 	IF_TRUE_GOTO(cert_size <= 0 || sig_size <= 0 || cert == NULL || sig == NULL, out);
 
-	crypto_verify_result_t verify_result = crypto_verify_buf_block(
-		conf_buf, conf_len, sig, sig_size, cert, cert_size, C_CONFIG_VERIFY_HASH_ALGO);
+	crypto_verify_result_t verify_result =
+		crypto_verify_buf_block(conf_buf, conf_len, sig, sig_size, cert, cert_size,
+					C_CONFIG_VERIFY_HASH_ALGO);
 
-	ret = (verify_result == VERIFY_GOOD) ? true : false;
+
+	if(verify_result.code == VERIFY_GOOD){
+		//Construct ca symlink name
+		str_t *ca_symlink = str_new(prefix);
+		str_append(ca_symlink, ".ca");
+		
+		if(file_exists(str_buffer(ca_symlink))){
+			char symlink_target[PATH_MAX] = {0}; 
+			int bytes_read = readlink(str_buffer(ca_symlink), symlink_target, PATH_MAX);
+			if (bytes_read == -1) {
+				ERROR("Target of symlink %s could not be read", str_buffer(ca_symlink));
+			}
+			if(!strncmp(str_buffer(verify_result.matched_ca), symlink_target, bytes_read)){
+				ret=true;
+			}else{
+				ERROR("Verification successful but CA %s did not match.", str_buffer(verify_result.matched_ca));
+			}			
+		}else{
+			if (symlink(str_buffer(verify_result.matched_ca), str_buffer(ca_symlink))) {
+				ERROR("FAILED to create symlink %s -> %s", str_buffer(ca_symlink),
+				      str_buffer(verify_result.matched_ca));
+			} else {
+				DEBUG("Created Symlink %s -> %s", str_buffer(ca_symlink), str_buffer(verify_result.matched_ca));
+				ret =true;
+			}
+			
+		}
+		str_free(ca_symlink, true);
+	}
+
+	
+
 out:
 	INFO("Verify Result of target with prefix '%s': %s", prefix, ret ? "GOOD" : "UNSIGNED");
 
 	mem_free0(sig);
 	mem_free0(cert);
+	/*if(verify_result.matched_ca){
+		str_free(verify_result.matched_ca, true);
+	}*/		
 	return ret;
 }
 
@@ -191,6 +229,7 @@ container_config_new(const char *file, const uint8_t *buf, size_t len, uint8_t *
 	IF_TRUE_GOTO(file_len < 5 || strcmp(file + file_len - 5, ".conf"), out);
 
 	prefix[file_len - 5] = '\0';
+
 
 	// check if config comes from buffer or needs to be read from file
 	if (buf == NULL) {

@@ -309,6 +309,10 @@ main(int argc, char *argv[])
 		msg.command = CONTROLLER_TO_DAEMON__COMMAND__LIST_GUESTOS_CONFIGS;
 		goto send_message;
 	}
+	if (!strcasecmp(command, "retrieve_logs")) {
+		msg.command = CONTROLLER_TO_DAEMON__COMMAND__RETRIEVE_LOGS;
+		goto send_message;
+	}
 	if (!strcasecmp(command, "reload")) {
 		msg.command = CONTROLLER_TO_DAEMON__COMMAND__RELOAD_CONTAINERS;
 		goto send_message;

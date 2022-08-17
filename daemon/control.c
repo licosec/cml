@@ -53,6 +53,12 @@
 
 #include <google/protobuf-c/protobuf-c-text.h>
 
+//Needed for log copy functionality
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
+
 // maximum no. of connections waiting to be accepted on the listening socket
 #define CONTROL_SOCK_LISTEN_BACKLOG 8
 
@@ -543,6 +549,58 @@ control_handle_cmd_list_guestos_configs(UNUSED const ControllerToDaemon *msg, in
 }
 
 /**
+ * Handles list_guestos_configs cmd.
+ * Used in both priv and unpriv control handlers.
+ */
+static void
+control_handle_cmd_retrieve_logs(UNUSED const ControllerToDaemon *msg, int fd)
+{
+	control_message_t message = CONTROL_RESPONSE_CMD_FAILED;
+	char *data_logs_dir = "/data/logs/";
+	char *var_logs_dir = "/tmp/00000000-0000-0000-0000-000000000000/var/logs/";
+	if (mkdir(var_logs_dir, 0755) && errno != EEXIST) {
+		WARN("var/logs path could not be created");
+	} else {
+		DIR *d;
+		struct dirent *dir;
+		d = opendir(data_logs_dir);
+		if (d) {
+			//iterate over all files in /data/logs
+			while ((dir = readdir(d)) != NULL) {
+				if (strcmp(dir->d_name, ".") == 0 ||
+				    strcasecmp(dir->d_name, "..") == 0) {
+					continue;
+				}
+				char srcpath[300] = { 0 };
+				char destpath[300] = { 0 };
+				strncat(srcpath, data_logs_dir, sizeof(srcpath) - 1);
+				strncat(destpath, var_logs_dir, sizeof(destpath) - 1);
+				strncat(srcpath, dir->d_name, sizeof(srcpath) - 1);
+				strncat(destpath, dir->d_name, sizeof(destpath) - 1);
+				FILE *sourcefile, *destfile;
+				sourcefile = fopen(srcpath, "r");
+				destfile = fopen(destpath, "w");
+
+				//Copy file
+				char buffer[1024];
+				size_t bytes_read;
+				while ((bytes_read = fread(buffer, 1, sizeof(buffer), sourcefile)) >
+				       0) {
+					fwrite(buffer, 1, bytes_read, destfile);
+				}
+				DEBUG("finished copying log-file %s.", dir->d_name);
+				fclose(sourcefile);
+				fclose(destfile);
+			}
+			message = CONTROL_RESPONSE_CMD_OK;
+		}
+	}
+	if (control_send_message(message, fd)) {
+		WARN("Sending protobuf message failed");
+	}
+}
+
+/**
  * Handles push_guestos_configs cmd
  * Used in both priv and unpriv control handlers.
  */
@@ -905,6 +963,10 @@ control_handle_message(control_t *control, const ControllerToDaemon *msg, int fd
 
 	case CONTROLLER_TO_DAEMON__COMMAND__LIST_GUESTOS_CONFIGS: {
 		control_handle_cmd_list_guestos_configs(msg, fd);
+	} break;
+
+	case CONTROLLER_TO_DAEMON__COMMAND__RETRIEVE_LOGS: {
+		control_handle_cmd_retrieve_logs(msg, fd);
 	} break;
 
 	case CONTROLLER_TO_DAEMON__COMMAND__LIST_CONTAINERS: {

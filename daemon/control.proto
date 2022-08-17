@@ -77,6 +77,9 @@ message ControllerToDaemon {
 		//This is a debugging feature!
 		GET_LAST_LOG = 5;
 
+		//Copies logs from /data/logs in trustx-cml to /var/cml-updates in c0
+		RETRIEVE_LOGS = 6;
+
 		//////////////////////////////////////////////
 		// Commands (global) that modify the system //
 		//////////////////////////////////////////////

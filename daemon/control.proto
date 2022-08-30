@@ -73,12 +73,9 @@ message ControllerToDaemon {
 		// Also fills [container_uuids] with the corresponding container UUIDs.
 		GET_CONTAINER_CONFIG = 4;	// [container_uuid] -> [container_config]
 
-		//Returns /proc/last_kmsg and /dev/log/main (line by line).
-		//This is a debugging feature!
+		//Returns logfiles stored in /data/logs
 		GET_LAST_LOG = 5;
 
-		//Copies logs from /data/logs in trustx-cml to /var/cml-updates in c0
-		RETRIEVE_LOGS = 6;
 
 		//////////////////////////////////////////////
 		// Commands (global) that modify the system //
@@ -232,7 +229,8 @@ message DaemonToController {
 		CONTAINER_IFACES = 5;		// -> [container_ifaces]
 
 		CONTAINER_CMLD_HANDLES_PIN = 7; // -> [container_cmld_handles_pin]
-
+		
+		
 		LOG_MESSAGE = 12;		// -> [log_message]
 
 		RESPONSE = 13;			// -> [response]
@@ -240,6 +238,8 @@ message DaemonToController {
 		EXEC_END = 14;
 
 		EXEC_OUTPUT = 15;
+
+		LOG_END = 16;
 
 		DEVICE_CSR = 40;		// -> [device_csr]
 
